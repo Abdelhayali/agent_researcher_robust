@@ -7514,29 +7514,17 @@ with tab_chat:
     conv = st.session_state.conversations[st.session_state.current_conv_id]
     messages = conv["messages"]  # mutated in place; persists in session_state automatically
 
-    # ---- CSS: sticky side panels + scrollable chat (matches Claude Code tab) --
+    # ---- CSS: simple panel spacing (avoids sticky/vh that break in iframes) --
     st.markdown("""
     <style>
-    .chat-sticky-left, .chat-sticky-right {
-        position: sticky;
-        top: 0.5rem;
-        max-height: 85vh;
-        overflow-y: auto;
-        padding-right: 0.3rem;
-    }
-    .chat-scroll {
-        max-height: 55vh;
-        overflow-y: auto;
-        padding: 0.5rem;
-        margin-bottom: 0.5rem;
+    .chat-side-panel {
         border: 1px solid rgba(128,128,128,0.12);
         border-radius: 8px;
+        padding: 0.5rem;
+        margin-bottom: 0.5rem;
     }
-    .chat-input-area {
-        position: sticky;
-        bottom: 0;
-        padding-top: 0.3rem;
-        z-index: 10;
+    .chat-messages {
+        padding: 0.5rem;
     }
     </style>
     """, unsafe_allow_html=True)
@@ -7560,7 +7548,7 @@ with tab_chat:
     # ── LEFT PANEL: Conversations ─────────────────────────────────────────
     if _show_left:
         with left_col:
-            st.markdown('<div class="chat-sticky-left">', unsafe_allow_html=True)
+            st.markdown('<div class="chat-side-panel">', unsafe_allow_html=True)
             st.caption("##### 💬 Conversations")
 
             # New conversation button
@@ -7607,7 +7595,7 @@ with tab_chat:
                               disabled=(_new_name == _cur_title or not _new_name),
                               on_click=_rename_conv)
 
-            st.markdown('</div>', unsafe_allow_html=True)  # close chat-sticky-left
+            st.markdown('</div>', unsafe_allow_html=True)  # close chat-side-panel
 
     # ── CENTER: Chat ──────────────────────────────────────────────────────
     with mid_col:
@@ -7664,8 +7652,8 @@ with tab_chat:
                     st.caption("Nothing remembered yet — it builds up automatically as you use "
                               "any tool in this app, not just chat.")
 
-        # Scrollable message history
-        st.markdown('<div class="chat-scroll">', unsafe_allow_html=True)
+        # Message history
+        st.markdown('<div class="chat-messages">', unsafe_allow_html=True)
         for m in messages:
             avatar = "🧑" if m["role"] == "user" else "✨"
             with st.chat_message(m["role"], avatar=avatar):
@@ -7675,7 +7663,7 @@ with tab_chat:
 
         if not messages:
             st.caption("👋 Ask me anything — or turn on web search in ⚙️ Settings for current info.")
-        st.markdown('</div>', unsafe_allow_html=True)  # close chat-scroll
+        st.markdown('</div>', unsafe_allow_html=True)  # close chat-messages
 
         # Follow-up question chips for the last answer, Perplexity-style
         followups = conv.get("followups") or []
@@ -7688,9 +7676,6 @@ with tab_chat:
                     if st.button(q, key=f"followup_{st.session_state.current_conv_id}_{len(messages)}_{i}",
                                 use_container_width=True):
                         clicked_followup = q
-
-        # Input area
-        st.markdown('<div class="chat-input-area">', unsafe_allow_html=True)
 
         # ---- Sending a message — shared by both the text box and follow-up chips --
         def send_message(um):
@@ -7803,12 +7788,10 @@ with tab_chat:
             send_message(um)
             st.rerun()
 
-        st.markdown('</div>', unsafe_allow_html=True)  # close chat-input-area
-
     # ── RIGHT PANEL: Context & Info ───────────────────────────────────────
     if _show_right and right_col is not None:
         with right_col:
-            st.markdown('<div class="chat-sticky-right">', unsafe_allow_html=True)
+            st.markdown('<div class="chat-side-panel">', unsafe_allow_html=True)
             st.caption("##### 📋 Context")
 
             # Attached files summary
@@ -7860,4 +7843,4 @@ with tab_chat:
                       disabled=len(conv_ids) <= 1,
                       on_click=_delete_conv, args=(st.session_state.current_conv_id,))
 
-            st.markdown('</div>', unsafe_allow_html=True)  # close chat-sticky-right
+            st.markdown('</div>', unsafe_allow_html=True)  # close chat-side-panel
