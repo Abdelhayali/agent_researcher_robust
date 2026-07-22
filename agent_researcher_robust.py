@@ -7514,6 +7514,156 @@ with tab_chat:
     conv = st.session_state.conversations[st.session_state.current_conv_id]
     messages = conv["messages"]  # mutated in place; persists in session_state automatically
 
+    # ---- Settings expander (outside columns so variables are in scope for send_message) --
+    with st.expander("⚙️ Settings & Attachments", expanded=False):
+        c1, c2 = st.columns([1, 1])
+        with c1:
+            chat_temperature = st.slider("Temperature", 0.0, 1.5, 0.7, 0.05, key="chat_temp")
+            tts_on = st.toggle("🔊 Speak replies", value=False)
+            tts_voice_label = None
+            if tts_on:
+                tts_voice_label = st.selectbox("Voice", list(TTS_VOICES.keys()), index=0, key="chat_tts_voice")
+        with c2:
+            chat_files = st.file_uploader("Attach files (PDF, TXT)", type=["pdf", "txt"], accept_multiple_files=True)
+            if chat_files:
+                st.caption(f"📎 {len(chat_files)} file(s) attached")
+
+        system_prompt = st.text_area("System prompt", "You are a helpful research assistant.", height=68)
+
+        web_on = st.toggle("🌐 Enable Web Search", value=False)
+        if web_on:
+            web_n = st.number_input("Search Results", 3, 10, 5)
+            web_read = st.checkbox("Read full pages")
+            web_max_rounds = st.slider(
+                "Max search rounds", 1, 5, 3,
+                help="If the first search isn't enough, the model can search again with a "
+                     "different query — up to this many times — before it answers.")
+
+        st.markdown("##### 🧠 Memory")
+        mem_enabled = st.toggle(
+            "Remember things about me across sessions", value=True, key="chat_mem_enabled",
+            help="Like ChatGPT's memory — the model notices durable facts (your name, role, "
+                 "preferences, ongoing projects) as you chat and recalls them in future "
+                 "sessions, even after the app restarts. This is the same memory every other "
+                 "tool in this app draws on and adds to — it's tied to your account, not just "
+                 "this chat.")
+        mem_profile = _CURRENT_USER
+        if mem_enabled:
+            mem_facts = load_memory(mem_profile)
+            if mem_facts:
+                st.caption(f"{len(mem_facts)} thing(s) remembered:")
+                for i, f in enumerate(mem_facts):
+                    mc1, mc2 = st.columns([6, 1])
+                    with mc1:
+                        st.caption(f"• {f['fact']}")
+                    with mc2:
+                        if st.button("🗑️", key=f"mem_del_{i}"):
+                            delete_memory_fact(mem_profile, i)
+                            st.rerun()
+                if st.button("🧹 Forget everything", key="mem_clear_all"):
+                    clear_memory(mem_profile)
+                    st.rerun()
+            else:
+                st.caption("Nothing remembered yet — it builds up automatically as you use "
+                          "any tool in this app, not just chat.")
+
+    # ---- send_message (defined here so st.chat_input outside columns can call it) --
+    def send_message(um):
+        # Auto-title the conversation from the first message, like ChatGPT does
+        if not messages:
+            conv["title"] = (um.strip()[:40] + "…") if len(um.strip()) > 40 else um.strip()
+        conv["followups"] = []  # clear stale suggestions now that a new turn is starting
+
+        # Process file context
+        file_context = ""
+        if chat_files:
+            file_context = "\n\n[Attached Context]\n"
+            for f in chat_files:
+                try:
+                    if f.type == "application/pdf":
+                        reader = PdfReader(f)
+                        text = "\n".join([page.extract_text() or "" for page in reader.pages])
+                        file_context += f"File: {f.name}\n{text}\n"
+                    else:
+                        file_context += f"File: {f.name}\n{f.read().decode('utf-8', errors='ignore')}\n"
+                except Exception as e:
+                    file_context += f"File: {f.name} [Error: {e}]\n"
+
+        # Display user message
+        messages.append({"role": "user", "content": um})
+        with st.chat_message("user", avatar="🧑"):
+            st.markdown(um)
+
+        # Process Web Search
+        flat_sources = []
+        if web_on:
+            with st.status("🌐 Researching…", expanded=True) as status_box:
+                def _status(msg):
+                    status_box.write(msg)
+                _raw_context, search_rounds = run_iterative_search(
+                    um, messages[:-1], global_model_string,
+                    api_base=selected_api_base, api_key=selected_api_key, num_ctx=num_ctx,
+                    max_results=int(web_n), read_pages=web_read, max_rounds=int(web_max_rounds),
+                    status_cb=_status)
+                flat_sources = flatten_search_results(search_rounds)
+                n_searches = sum(1 for r in search_rounds if r["type"] == "search")
+                if n_searches:
+                    status_box.update(label=f"🌐 Searched {n_searches} round(s) — {len(flat_sources)} source(s)",
+                                     state="complete")
+                else:
+                    status_box.update(label="🌐 Web search skipped — not needed for this question", state="complete")
+
+        sys_txt = system_prompt.strip()
+        if flat_sources:
+            cited_context = build_cited_context(flat_sources, use_pages=web_read)
+            sys_txt += (
+                "\n\nYou have the following numbered web sources available. Cite them inline "
+                "using [n] immediately after any claim they support. Only cite when a source "
+                "directly supports the specific claim — don't force citations onto general "
+                "knowledge.\n\n" + cited_context
+            )
+        msgs = [{"role": "system", "content": sys_txt}] + messages[:-1]
+        msgs.append({"role": "user", "content": um + file_context})
+
+        # Stream response
+        with st.chat_message("assistant", avatar="✨"):
+            try:
+                response = st.write_stream(stream_chat(msgs, global_model_string,
+                                                     api_base=selected_api_base,
+                                                     api_key=selected_api_key,
+                                                     temperature=chat_temperature))
+                if flat_sources:
+                    render_source_cards(flat_sources)
+                messages.append({"role": "assistant", "content": response, "sources": flat_sources})
+
+                # Optional TTS
+                if tts_on and tts_voice_label:
+                    audio, _ = tts_to_mp3(response, voice=TTS_VOICES[tts_voice_label])
+                    if audio:
+                        st.audio(audio, format="audio/mpeg", autoplay=True)
+
+                # Suggest related follow-up questions
+                with st.spinner("Thinking of related questions…"):
+                    conv["followups"] = suggest_followups(
+                        um, response, global_model_string,
+                        api_base=selected_api_base, api_key=selected_api_key, num_ctx=num_ctx)
+
+                # Update long-term memory
+                if mem_enabled:
+                    existing = [f["fact"] for f in load_memory(mem_profile)]
+                    new_fact = extract_memory_fact(
+                        um, response, existing, global_model_string,
+                        api_base=selected_api_base, api_key=selected_api_key, num_ctx=num_ctx)
+                    if new_fact:
+                        add_memory_fact(mem_profile, new_fact)
+                        st.caption(f"🧠 Remembered: {new_fact}")
+
+                # Persist the conversation to disk so it survives browser close
+                save_chat_conversation(st.session_state.current_conv_id, conv)
+            except Exception as e:
+                st.error(f"Error: {e}")
+                messages.pop()
+
     # ---- CSS: simple panel spacing (avoids sticky/vh that break in iframes) --
     st.markdown("""
     <style>
@@ -7597,61 +7747,8 @@ with tab_chat:
 
             st.markdown('</div>', unsafe_allow_html=True)  # close chat-side-panel
 
-    # ── CENTER: Chat ──────────────────────────────────────────────────────
+    # ── CENTER: Chat messages ──────────────────────────────────────────────
     with mid_col:
-        # Settings expander at top
-        with st.expander("⚙️ Settings & Attachments", expanded=False):
-            c1, c2 = st.columns([1, 1])
-            with c1:
-                chat_temperature = st.slider("Temperature", 0.0, 1.5, 0.7, 0.05, key="chat_temp")
-                tts_on = st.toggle("🔊 Speak replies", value=False)
-                tts_voice_label = None
-                if tts_on:
-                    tts_voice_label = st.selectbox("Voice", list(TTS_VOICES.keys()), index=0, key="chat_tts_voice")
-            with c2:
-                chat_files = st.file_uploader("Attach files (PDF, TXT)", type=["pdf", "txt"], accept_multiple_files=True)
-                if chat_files:
-                    st.caption(f"📎 {len(chat_files)} file(s) attached")
-
-            system_prompt = st.text_area("System prompt", "You are a helpful research assistant.", height=68)
-
-            web_on = st.toggle("🌐 Enable Web Search", value=False)
-            if web_on:
-                web_n = st.number_input("Search Results", 3, 10, 5)
-                web_read = st.checkbox("Read full pages")
-                web_max_rounds = st.slider(
-                    "Max search rounds", 1, 5, 3,
-                    help="If the first search isn't enough, the model can search again with a "
-                         "different query — up to this many times — before it answers.")
-
-            st.markdown("##### 🧠 Memory")
-            mem_enabled = st.toggle(
-                "Remember things about me across sessions", value=True, key="chat_mem_enabled",
-                help="Like ChatGPT's memory — the model notices durable facts (your name, role, "
-                     "preferences, ongoing projects) as you chat and recalls them in future "
-                     "sessions, even after the app restarts. This is the same memory every other "
-                     "tool in this app draws on and adds to — it's tied to your account, not just "
-                     "this chat.")
-            mem_profile = _CURRENT_USER
-            if mem_enabled:
-                mem_facts = load_memory(mem_profile)
-                if mem_facts:
-                    st.caption(f"{len(mem_facts)} thing(s) remembered:")
-                    for i, f in enumerate(mem_facts):
-                        mc1, mc2 = st.columns([6, 1])
-                        with mc1:
-                            st.caption(f"• {f['fact']}")
-                        with mc2:
-                            if st.button("🗑️", key=f"mem_del_{i}"):
-                                delete_memory_fact(mem_profile, i)
-                                st.rerun()
-                    if st.button("🧹 Forget everything", key="mem_clear_all"):
-                        clear_memory(mem_profile)
-                        st.rerun()
-                else:
-                    st.caption("Nothing remembered yet — it builds up automatically as you use "
-                              "any tool in this app, not just chat.")
-
         # Message history
         st.markdown('<div class="chat-messages">', unsafe_allow_html=True)
         for m in messages:
@@ -7676,117 +7773,6 @@ with tab_chat:
                     if st.button(q, key=f"followup_{st.session_state.current_conv_id}_{len(messages)}_{i}",
                                 use_container_width=True):
                         clicked_followup = q
-
-        # ---- Sending a message — shared by both the text box and follow-up chips --
-        def send_message(um):
-            # Auto-title the conversation from the first message, like ChatGPT does
-            if not messages:
-                conv["title"] = (um.strip()[:40] + "…") if len(um.strip()) > 40 else um.strip()
-            conv["followups"] = []  # clear stale suggestions now that a new turn is starting
-
-            # Process file context
-            file_context = ""
-            if chat_files:
-                file_context = "\n\n[Attached Context]\n"
-                for f in chat_files:
-                    try:
-                        if f.type == "application/pdf":
-                            reader = PdfReader(f)
-                            text = "\n".join([page.extract_text() or "" for page in reader.pages])
-                            file_context += f"File: {f.name}\n{text}\n"
-                        else:
-                            file_context += f"File: {f.name}\n{f.read().decode('utf-8', errors='ignore')}\n"
-                    except Exception as e:
-                        file_context += f"File: {f.name} [Error: {e}]\n"
-
-            # Display user message
-            messages.append({"role": "user", "content": um})
-            with st.chat_message("user", avatar="🧑"):
-                st.markdown(um)
-
-            # Process Web Search — plan → search → judge → (maybe) search again, then flatten
-            # every round into ONE deduped, globally-numbered source list.
-            flat_sources = []
-            if web_on:
-                with st.status("🌐 Researching…", expanded=True) as status_box:
-                    def _status(msg):
-                        status_box.write(msg)
-
-                    _raw_context, search_rounds = run_iterative_search(
-                        um, messages[:-1], global_model_string,
-                        api_base=selected_api_base, api_key=selected_api_key, num_ctx=num_ctx,
-                        max_results=int(web_n), read_pages=web_read, max_rounds=int(web_max_rounds),
-                        status_cb=_status)
-
-                    flat_sources = flatten_search_results(search_rounds)
-                    n_searches = sum(1 for r in search_rounds if r["type"] == "search")
-                    if n_searches:
-                        status_box.update(label=f"🌐 Searched {n_searches} round(s) — {len(flat_sources)} source(s)",
-                                         state="complete")
-                    else:
-                        status_box.update(label="🌐 Web search skipped — not needed for this question", state="complete")
-
-            # Prepare messages — instruct inline [n] citations tied to the numbered source list
-            # (Memory is NOT manually appended here — stream_chat() injects the account's
-            # USER_MEMORY_CONTEXT into every call automatically.)
-            sys_txt = system_prompt.strip()
-            if flat_sources:
-                cited_context = build_cited_context(flat_sources, use_pages=web_read)
-                sys_txt += (
-                    "\n\nYou have the following numbered web sources available. Cite them inline "
-                    "using [n] immediately after any claim they support. Only cite when a source "
-                    "directly supports the specific claim — don't force citations onto general "
-                    "knowledge.\n\n" + cited_context
-                )
-            msgs = [{"role": "system", "content": sys_txt}] + messages[:-1]
-            msgs.append({"role": "user", "content": um + file_context})
-
-            # Stream response
-            with st.chat_message("assistant", avatar="✨"):
-                try:
-                    response = st.write_stream(stream_chat(msgs, global_model_string,
-                                                         api_base=selected_api_base,
-                                                         api_key=selected_api_key,
-                                                         temperature=chat_temperature))
-                    if flat_sources:
-                        render_source_cards(flat_sources)
-                    messages.append({"role": "assistant", "content": response, "sources": flat_sources})
-
-                    # Optional TTS
-                    if tts_on and tts_voice_label:
-                        audio, _ = tts_to_mp3(response, voice=TTS_VOICES[tts_voice_label])
-                        if audio:
-                            st.audio(audio, format="audio/mpeg", autoplay=True)
-
-                    # Suggest related follow-up questions, Perplexity-style
-                    with st.spinner("Thinking of related questions…"):
-                        conv["followups"] = suggest_followups(
-                            um, response, global_model_string,
-                            api_base=selected_api_base, api_key=selected_api_key, num_ctx=num_ctx)
-
-                    # Update long-term memory, ChatGPT-style
-                    if mem_enabled:
-                        existing = [f["fact"] for f in load_memory(mem_profile)]
-                        new_fact = extract_memory_fact(
-                            um, response, existing, global_model_string,
-                            api_base=selected_api_base, api_key=selected_api_key, num_ctx=num_ctx)
-                        if new_fact:
-                            add_memory_fact(mem_profile, new_fact)
-                            st.caption(f"🧠 Remembered: {new_fact}")
-
-                    # Persist the conversation to disk so it survives browser close
-                    save_chat_conversation(st.session_state.current_conv_id, conv)
-                except Exception as e:
-                    st.error(f"Error: {e}")
-                    messages.pop()  # drop the empty/failed turn so retrying doesn't duplicate it
-
-        # ---- Input -----------------------------------------------------------
-        um_typed = st.chat_input("Message the AI...")
-        um = clicked_followup or um_typed
-        if um:
-            log_event(_CURRENT_USER, "chat_message")
-            send_message(um)
-            st.rerun()
 
     # ── RIGHT PANEL: Context & Info ───────────────────────────────────────
     if _show_right and right_col is not None:
@@ -7844,3 +7830,11 @@ with tab_chat:
                       on_click=_delete_conv, args=(st.session_state.current_conv_id,))
 
             st.markdown('</div>', unsafe_allow_html=True)  # close chat-side-panel
+
+    # ---- Chat input (outside columns so it works reliably in all environments) --
+    um_typed = st.chat_input("Message the AI...")
+    um = clicked_followup or um_typed
+    if um:
+        log_event(_CURRENT_USER, "chat_message")
+        send_message(um)
+        st.rerun()
