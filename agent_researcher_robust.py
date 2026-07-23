@@ -3715,7 +3715,10 @@ with st.sidebar:
         "DeepSeek (OpenAI)", "DeepSeek (Anthropic)",
         "Qwen (DashScope)", "Qwen (Anthropic)", "Custom (Anthropic-compatible)",
         "Custom (OpenAI-compatible)",
-    ])
+    ], help="💡 Don't have an API key? Google AI Studio is free — get a key at aistudio.google.com")
+
+    st.caption("💡 **No API key?** Select **Google AI Studio** — it's free. "
+               "Get a key at [aistudio.google.com](https://aistudio.google.com) → Get API Key → copy it here.")
     
     selected_api_key = None
     selected_api_base = None
