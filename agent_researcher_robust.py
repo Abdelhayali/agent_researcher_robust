@@ -3711,7 +3711,7 @@ with st.sidebar:
     st.header("⚙️ Configuration")
     
     provider_choice = st.selectbox("AI Provider", [
-        "Ollama (Local/Cloud)", "Google AI Studio", "Anthropic (Claude)",
+        "Google AI Studio", "Ollama (Local/Cloud)", "Anthropic (Claude)",
         "DeepSeek (OpenAI)", "DeepSeek (Anthropic)",
         "Qwen (DashScope)", "Qwen (Anthropic)", "Custom (Anthropic-compatible)",
         "Custom (OpenAI-compatible)",
@@ -3723,7 +3723,23 @@ with st.sidebar:
     selected_api_key = None
     selected_api_base = None
     
-    if provider_choice == "Ollama (Local/Cloud)":
+    if provider_choice == "Google AI Studio":
+        st.subheader("Google AI Studio connection")
+        google_key = st.text_input("Google AI API Key", type="password",
+                                   value=os.environ.get("GEMINI_API_KEY", ""),
+                                   help="Paste your API key from Google AI Studio.")
+        selected_api_key = google_key or None
+
+        # Dynamically fetch available models directly from Google based on API Key
+        google_models = list_google_models(selected_api_key)
+
+        st.divider()
+        st.subheader("Research-crew model")
+        crew_model = st.selectbox("Gemini Model", google_models, index=default_model_index(google_models, provider="google"))
+        global_model_string = f"gemini/{crew_model}"
+        crew_model_string = f"gemini/{crew_model}"
+
+    elif provider_choice == "Ollama (Local/Cloud)":
         st.subheader("Ollama connection")
         base_url = st.text_input("Ollama base URL", value="http://localhost:11434",
                                  help="Local: http://localhost:11434  ·  "
@@ -3734,10 +3750,10 @@ with st.sidebar:
                                         "ollama.com → Settings → Keys.")
         selected_api_base = base_url
         selected_api_key = ollama_key or None
-        
+
         installed = list_ollama_models(base_url, api_key=ollama_key or None)
         st.caption(f"✅ {len(installed)} model(s) found" if installed else "⚠️ No Ollama models found")
-        
+
         st.divider()
         st.subheader("Research-crew model")
         if installed:
@@ -3748,22 +3764,6 @@ with st.sidebar:
             crew_model = st.text_input("Crew model", value="llama3.2")
             global_model_string = f"ollama_chat/{crew_model}"
             crew_model_string = f"ollama/{crew_model}"
-
-    elif provider_choice == "Google AI Studio":
-        st.subheader("Google AI Studio connection")
-        google_key = st.text_input("Google AI API Key", type="password", 
-                                   value=os.environ.get("GEMINI_API_KEY", ""),
-                                   help="Paste your API key from Google AI Studio.")
-        selected_api_key = google_key or None
-        
-        # Dynamically fetch available models directly from Google based on API Key
-        google_models = list_google_models(selected_api_key)
-        
-        st.divider()
-        st.subheader("Research-crew model")
-        crew_model = st.selectbox("Gemini Model", google_models, index=default_model_index(google_models, provider="google"))
-        global_model_string = f"gemini/{crew_model}"
-        crew_model_string = f"gemini/{crew_model}"
 
     elif provider_choice == "Anthropic (Claude)":
         st.subheader("Anthropic connection")
