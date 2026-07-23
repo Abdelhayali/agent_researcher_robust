@@ -6213,7 +6213,7 @@ with tab_coding:
                 "```bash\nnpm install -g @anthropic-ai/claude-code\n```\n\n"
                 "Requires Node.js 18+. See the [Claude Code docs](https://docs.claude.com/en/docs/claude-code) "
                 "for other install options.")
-            st.stop()
+            claude_path = "claude"  # fallback so the UI still renders; launch button stays disabled
 
         if "cc_native" not in st.session_state:
             st.session_state.cc_native = {"turns": [], "run_gen": 0}
